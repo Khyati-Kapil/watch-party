@@ -14,6 +14,15 @@ export class RoomManager {
     return this.rooms.get(roomId);
   }
 
+  findRoomBySocketId(socketId: string) {
+    for (const room of this.rooms.values()) {
+      if (room.hasParticipant(socketId)) {
+        return room;
+      }
+    }
+    return undefined;
+  }
+
   deleteRoom(roomId: string) {
     this.rooms.delete(roomId);
   }
