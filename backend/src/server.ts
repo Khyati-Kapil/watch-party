@@ -2,19 +2,30 @@ import express from "express";
 import http from "http";
 import { Server } from "socket.io";
 import cors from "cors";
+import dotenv from "dotenv";
 
 import { RoomManager } from "./rooms/RoomManager";
 import { Participant } from "./rooms/Participant";
 import { Role } from "./rooms/Participant";
 
+dotenv.config();
+
 const app = express();
-app.use(cors());
+
+const allowedOrigins = (process.env.CORS_ORIGIN ?? "*")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+app.use(cors({
+  origin: allowedOrigins.includes("*") ? "*" : allowedOrigins
+}));
 
 const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: "*"
+    origin: allowedOrigins.includes("*") ? "*" : allowedOrigins
   }
 });
 
@@ -24,9 +35,41 @@ app.get("/", (req, res) => {
   res.send("Watch Party Server Running 🚀");
 });
 
+app.get("/health", (req, res) => {
+  res.json({
+    status: "ok",
+    uptimeSeconds: Math.round(process.uptime()),
+    timestamp: new Date().toISOString(),
+    version: process.env.APP_VERSION ?? "1.0.0"
+  });
+});
+
 io.on("connection", (socket) => {
 
   console.log("User connected:", socket.id);
+
+  const emitSyncState = (
+    roomId: string,
+    sourceSocketId: string,
+    reason: "play" | "pause" | "seek" | "change_video" | "progress",
+    broadcastToSource = true
+  ) => {
+    const room = roomManager.getRoom(roomId);
+    if (!room) return;
+
+    const payload = {
+      ...room.getState(),
+      sourceSocketId,
+      reason
+    };
+
+    if (broadcastToSource) {
+      io.to(roomId).emit("sync_state", payload);
+      return;
+    }
+
+    socket.to(roomId).emit("sync_state", payload);
+  };
 
   const leaveRoom = (roomId?: string) => {
     if (!roomId) return;
@@ -100,7 +143,7 @@ io.on("connection", (socket) => {
 
   });
 
-  socket.on("play", ({ roomId }) => {
+  socket.on("play", ({ roomId, currentTime }) => {
 
     const room = roomManager.getRoom(roomId);
     if (!room) return;
@@ -109,13 +152,16 @@ io.on("connection", (socket) => {
       return;
     }
 
+    if (typeof currentTime === "number") {
+      room.setCurrentTime(currentTime);
+    }
     room.play();
 
-    io.to(roomId).emit("sync_state", room.getState());
+    emitSyncState(roomId, socket.id, "play");
 
   });
 
-  socket.on("pause", ({ roomId }) => {
+  socket.on("pause", ({ roomId, currentTime }) => {
 
     const room = roomManager.getRoom(roomId);
     if (!room) return;
@@ -124,9 +170,12 @@ io.on("connection", (socket) => {
       return;
     }
 
+    if (typeof currentTime === "number") {
+      room.setCurrentTime(currentTime);
+    }
     room.pause();
 
-    io.to(roomId).emit("sync_state", room.getState());
+    emitSyncState(roomId, socket.id, "pause");
 
   });
 
@@ -145,7 +194,7 @@ io.on("connection", (socket) => {
 
     room.seek(time);
 
-    io.to(roomId).emit("sync_state", room.getState());
+    emitSyncState(roomId, socket.id, "seek");
 
   });
 
@@ -164,8 +213,25 @@ io.on("connection", (socket) => {
 
     room.changeVideo(videoId);
 
-    io.to(roomId).emit("sync_state", room.getState());
+    emitSyncState(roomId, socket.id, "change_video");
 
+  });
+
+  socket.on("progress", ({ roomId, currentTime }) => {
+    const room = roomManager.getRoom(roomId);
+    if (!room) return;
+    if (!room.canControlPlayback(socket.id)) return;
+    if (typeof currentTime !== "number" || Number.isNaN(currentTime) || currentTime < 0) return;
+
+    const previousTime = room.getState().currentTime;
+    room.setCurrentTime(currentTime);
+
+    // Ignore tiny drifts; only broadcast meaningful corrections to other clients.
+    if (Math.abs(currentTime - previousTime) < 0.8) {
+      return;
+    }
+
+    emitSyncState(roomId, socket.id, "progress", false);
   });
 
   socket.on("assign_role", ({ roomId, userId, role }) => {

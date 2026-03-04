@@ -98,6 +98,13 @@ export class Room {
     this.currentTime = time;
   }
 
+  setCurrentTime(time: number) {
+    if (Number.isNaN(time) || time < 0) {
+      return;
+    }
+    this.currentTime = time;
+  }
+
   changeVideo(videoId: string) {
     this.videoId = videoId;
     this.currentTime = 0;

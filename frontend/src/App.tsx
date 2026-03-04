@@ -4,6 +4,7 @@ import "./App.css";
 import { socket } from "./socket";
 
 type Role = "host" | "moderator" | "participant";
+type SyncReason = "play" | "pause" | "seek" | "change_video" | "progress";
 
 type Participant = {
   socketId: string;
@@ -15,7 +16,11 @@ type SyncState = {
   videoId: string;
   playState: "playing" | "paused";
   currentTime: number;
+  sourceSocketId?: string;
+  reason?: SyncReason;
 };
+
+const SESSION_KEY = "watch_party_session";
 
 function extractYouTubeVideoId(input: string): string | null {
   if (!input) return null;
@@ -47,11 +52,19 @@ function App() {
   const [videoInput, setVideoInput] = useState("dQw4w9WgXcQ");
   const [seekInput, setSeekInput] = useState("0");
   const [status, setStatus] = useState("");
+  const [isPlaying, setIsPlaying] = useState(false);
 
   const playerRef = useRef<any>(null);
   const suppressOutgoingStateRef = useRef(false);
   const suppressResetTimerRef = useRef<number | null>(null);
   const myUserIdRef = useRef("");
+  const joinedRoomIdRef = useRef("");
+  const usernameRef = useRef("");
+  const canControlPlaybackRef = useRef(false);
+  const isPlayingRef = useRef(false);
+  const lastSyncedTimeRef = useRef(0);
+  const bufferingStartTimeRef = useRef<number | null>(null);
+  const pendingJoinNameRef = useRef("");
 
   const canControlPlayback = useMemo(
     () => myRole === "host" || myRole === "moderator",
@@ -63,6 +76,36 @@ function App() {
     myUserIdRef.current = myUserId;
   }, [myUserId]);
 
+  useEffect(() => {
+    joinedRoomIdRef.current = joinedRoomId;
+  }, [joinedRoomId]);
+
+  useEffect(() => {
+    usernameRef.current = username;
+  }, [username]);
+
+  useEffect(() => {
+    canControlPlaybackRef.current = canControlPlayback;
+  }, [canControlPlayback]);
+
+  useEffect(() => {
+    isPlayingRef.current = isPlaying;
+  }, [isPlaying]);
+
+  const getPlayerTime = () => {
+    if (!playerRef.current) return 0;
+    const current = Number(playerRef.current.getCurrentTime?.() ?? 0);
+    return Number.isFinite(current) && current >= 0 ? current : 0;
+  };
+
+  const persistSession = (roomId: string, name: string) => {
+    localStorage.setItem(SESSION_KEY, JSON.stringify({ roomId, username: name }));
+  };
+
+  const clearSession = () => {
+    localStorage.removeItem(SESSION_KEY);
+  };
+
   const joinRoom = () => {
     const roomId = roomInput.trim();
     const name = username.trim();
@@ -72,17 +115,25 @@ function App() {
       return;
     }
 
+    pendingJoinNameRef.current = name;
     socket.emit("join_room", { roomId, username: name });
   };
 
-  const leaveRoom = () => {
-    if (!joinedRoomId) return;
-    socket.emit("leave_room", { roomId: joinedRoomId });
+  const resetJoinedState = (message: string) => {
     setJoinedRoomId("");
     setMyUserId("");
     setMyRole("participant");
     setParticipants([]);
-    setStatus("Left room.");
+    setIsPlaying(false);
+    setStatus(message);
+    pendingJoinNameRef.current = "";
+    clearSession();
+  };
+
+  const leaveRoom = () => {
+    if (!joinedRoomIdRef.current) return;
+    socket.emit("leave_room", { roomId: joinedRoomIdRef.current });
+    resetJoinedState("Left room.");
   };
 
   const onReady = (event: any) => {
@@ -97,9 +148,13 @@ function App() {
 
     if (state.playState === "playing") {
       playerRef.current.playVideo();
+      setIsPlaying(true);
     } else {
       playerRef.current.pauseVideo();
+      setIsPlaying(false);
     }
+
+    lastSyncedTimeRef.current = state.currentTime;
 
     if (suppressResetTimerRef.current !== null) {
       window.clearTimeout(suppressResetTimerRef.current);
@@ -111,50 +166,113 @@ function App() {
   };
 
   const onStateChange = (event: any) => {
-    if (!joinedRoomId || !canControlPlayback || suppressOutgoingStateRef.current) return;
+    if (!joinedRoomIdRef.current || !canControlPlaybackRef.current || suppressOutgoingStateRef.current) return;
+
+    const currentTime = getPlayerTime();
+
+    if (event.data === 3) {
+      bufferingStartTimeRef.current = currentTime;
+      return;
+    }
+
+    const maybeBufferedTime = bufferingStartTimeRef.current;
+    if (maybeBufferedTime !== null) {
+      const drift = Math.abs(currentTime - maybeBufferedTime);
+      if (drift >= 1.25) {
+        socket.emit("seek", { roomId: joinedRoomIdRef.current, time: currentTime });
+        lastSyncedTimeRef.current = currentTime;
+      }
+      bufferingStartTimeRef.current = null;
+    }
 
     if (event.data === 1) {
-      socket.emit("play", { roomId: joinedRoomId });
+      setIsPlaying(true);
+      socket.emit("play", { roomId: joinedRoomIdRef.current, currentTime });
+      return;
     }
 
     if (event.data === 2) {
-      socket.emit("pause", { roomId: joinedRoomId });
+      setIsPlaying(false);
+      socket.emit("pause", { roomId: joinedRoomIdRef.current, currentTime });
     }
   };
 
   const sendSeek = () => {
-    if (!joinedRoomId || !canControlPlayback) return;
+    if (!joinedRoomIdRef.current || !canControlPlaybackRef.current) return;
     const time = Number(seekInput);
     if (Number.isNaN(time) || time < 0) {
       setStatus("Seek value must be a non-negative number.");
       return;
     }
-    socket.emit("seek", { roomId: joinedRoomId, time });
+
+    if (Math.abs(time - lastSyncedTimeRef.current) < 0.5) {
+      return;
+    }
+
+    socket.emit("seek", { roomId: joinedRoomIdRef.current, time });
+    lastSyncedTimeRef.current = time;
   };
 
   const sendVideoChange = () => {
-    if (!joinedRoomId || !canControlPlayback) return;
+    if (!joinedRoomIdRef.current || !canControlPlaybackRef.current) return;
     const parsed = extractYouTubeVideoId(videoInput.trim());
     if (!parsed) {
       setStatus("Enter a valid YouTube URL or 11-character video ID.");
       return;
     }
-    socket.emit("change_video", { roomId: joinedRoomId, videoId: parsed });
+    socket.emit("change_video", { roomId: joinedRoomIdRef.current, videoId: parsed });
   };
 
   const assignRole = (userId: string, role: "moderator" | "participant") => {
-    if (!joinedRoomId || !isHost) return;
-    socket.emit("assign_role", { roomId: joinedRoomId, userId, role });
+    if (!joinedRoomIdRef.current || !isHost) return;
+    socket.emit("assign_role", { roomId: joinedRoomIdRef.current, userId, role });
   };
 
   const removeParticipant = (userId: string) => {
-    if (!joinedRoomId || !isHost) return;
-    socket.emit("remove_participant", { roomId: joinedRoomId, userId });
+    if (!joinedRoomIdRef.current || !isHost) return;
+    socket.emit("remove_participant", { roomId: joinedRoomIdRef.current, userId });
   };
+
+  useEffect(() => {
+    const progressInterval = window.setInterval(() => {
+      if (!joinedRoomIdRef.current || !canControlPlaybackRef.current || !isPlayingRef.current) {
+        return;
+      }
+
+      const currentTime = getPlayerTime();
+      socket.emit("progress", {
+        roomId: joinedRoomIdRef.current,
+        currentTime
+      });
+    }, 2000);
+
+    return () => {
+      window.clearInterval(progressInterval);
+    };
+  }, []);
 
   useEffect(() => {
     socket.on("connect", () => {
       setStatus("Connected to server.");
+
+      const rawSession = localStorage.getItem(SESSION_KEY);
+      if (!rawSession || joinedRoomIdRef.current) return;
+
+      try {
+        const saved = JSON.parse(rawSession) as { roomId?: string; username?: string };
+        if (!saved.roomId || !saved.username) return;
+
+        setRoomInput(saved.roomId);
+        setUsername(saved.username);
+        socket.emit("join_room", { roomId: saved.roomId, username: saved.username });
+        setStatus(`Rejoining room ${saved.roomId}...`);
+      } catch {
+        clearSession();
+      }
+    });
+
+    socket.on("disconnect", () => {
+      setStatus("Disconnected from server. Waiting to reconnect...");
     });
 
     socket.on(
@@ -171,6 +289,8 @@ function App() {
         setMyRole(data.role);
         setParticipants(data.participants);
         setStatus(`Joined room ${data.roomId} as ${data.role}.`);
+        const persistedName = pendingJoinNameRef.current || usernameRef.current;
+        persistSession(data.roomId, persistedName);
 
         if (data.state.videoId) {
           setVideoId(data.state.videoId);
@@ -210,11 +330,7 @@ function App() {
         participants?: Participant[];
       }) => {
         if (data.userId === myUserIdRef.current) {
-          setJoinedRoomId("");
-          setMyUserId("");
-          setMyRole("participant");
-          setParticipants([]);
-          setStatus("You were removed from the room by host.");
+          resetJoinedState("You were removed from the room by host.");
           return;
         }
 
@@ -229,6 +345,10 @@ function App() {
     });
 
     socket.on("sync_state", (state: SyncState) => {
+      if (state.sourceSocketId && state.sourceSocketId === myUserIdRef.current) {
+        return;
+      }
+
       if (state.videoId) {
         setVideoId(state.videoId);
         setVideoInput(state.videoId);
@@ -238,6 +358,7 @@ function App() {
 
     return () => {
       socket.off("connect");
+      socket.off("disconnect");
       socket.off("joined_room");
       socket.off("user_joined");
       socket.off("user_left");
