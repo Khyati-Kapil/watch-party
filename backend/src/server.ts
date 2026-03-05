@@ -13,22 +13,47 @@ dotenv.config();
 
 const app = express();
 
+const normalizeOrigin = (origin: string) => origin.trim().replace(/\/+$/, "");
+
 const allowedOrigins = (process.env.CORS_ORIGIN ?? "*")
   .split(",")
-  .map((origin) => origin.trim())
+  .map((origin) => normalizeOrigin(origin))
   .filter(Boolean);
 
+const allowAllOrigins = allowedOrigins.includes("*");
+
+const isAllowedOrigin = (origin?: string | null) => {
+  if (allowAllOrigins) return true;
+  if (!origin) return true;
+  return allowedOrigins.includes(normalizeOrigin(origin));
+};
+
 app.use(cors({
-  origin: allowedOrigins.includes("*") ? "*" : allowedOrigins
+  origin: (origin, callback) => {
+    if (isAllowedOrigin(origin)) {
+      callback(null, true);
+      return;
+    }
+    callback(new Error(`CORS blocked for origin: ${origin ?? "unknown"}`));
+  }
 }));
 
 const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: allowedOrigins.includes("*") ? "*" : allowedOrigins
+    origin: (origin, callback) => {
+      if (isAllowedOrigin(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(new Error(`Socket.IO CORS blocked for origin: ${origin ?? "unknown"}`));
+    },
+    methods: ["GET", "POST"]
   }
 });
+
+console.log("CORS_ORIGIN resolved to:", allowAllOrigins ? "*" : allowedOrigins);
 
 const roomManager = new RoomManager();
 
