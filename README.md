@@ -6,16 +6,13 @@ Users can create/join rooms, get role-based permissions (Host, Moderator, Partic
 
 ## Live Deployment
 
-- Frontend: [https://watch-party-iytq.onrender.com](https://watch-party-iytq.onrender.com)
-- Backend: [https://watch-party-backend-4msr.onrender.com](https://watch-party-backend-4msr.onrender.com)
-- Backend health: [https://watch-party-backend-4msr.onrender.com/health](https://watch-party-backend-4msr.onrender.com/health)
+-https://watch-party-q48i.vercel.app/ 
 
 ## Core Features
 
 - Room-based watch parties with shareable room code/link
 - Real-time sync of:
   - play/pause
-  - seek
   - video change
 - Role-based access control:
   - Host: full control, role assignment, remove participant, transfer host
@@ -36,7 +33,7 @@ Users can create/join rooms, get role-based permissions (Host, Moderator, Partic
 
 1. Client joins a room using `join_room`.
 2. Server creates room (first user becomes Host) or adds participant.
-3. Playback actions (`play`, `pause`, `seek`, `change_video`) are permission-checked on backend.
+3. Playback actions (`play`, `pause`, `change_video`) are permission-checked on backend.
 4. Backend updates room state and broadcasts `sync_state` to room.
 5. Clients apply sync to YouTube player.
 6. Role and participant updates are broadcast (`role_assigned`, `participant_removed`, `user_joined`, `user_left`).
@@ -61,37 +58,6 @@ watch-party/
       socket.ts
 ```
 
-## Environment Variables
-
-### Backend (`backend/.env`)
-
-Copy `backend/.env.example` to `backend/.env`.
-
-```env
-PORT=5000
-APP_VERSION=1.0.0
-CORS_ORIGIN=http://localhost:5173,https://watch-party-iytq.onrender.com
-```
-
-Notes:
-- `CORS_ORIGIN` supports comma-separated origins.
-- Use origins without trailing slash.
-
-### Frontend (`frontend/.env`)
-
-Copy `frontend/.env.example` to `frontend/.env`.
-
-```env
-VITE_SOCKET_URL=http://localhost:5000
-VITE_API_URL=http://localhost:5000
-```
-
-For production frontend deployment:
-
-```env
-VITE_SOCKET_URL=https://watch-party-backend-4msr.onrender.com
-VITE_API_URL=https://watch-party-backend-4msr.onrender.com
-```
 
 ## Local Development
 
@@ -159,46 +125,5 @@ Server -> Client:
 - `message_received`
 - `error_message`
 
-## Deployment (Render)
 
-### Backend Web Service
 
-- Root Directory: `backend`
-- Build Command: `npm ci && npm run build`
-- Start Command: `npm start`
-- Environment:
-  - `APP_VERSION=1.0.0`
-  - `CORS_ORIGIN=https://watch-party-iytq.onrender.com,http://localhost:5173`
-
-### Frontend Static Site
-
-- Root Directory: `frontend`
-- Build Command: `npm ci && npm run build`
-- Publish Directory: `dist`
-- Environment:
-  - `VITE_SOCKET_URL=https://watch-party-backend-4msr.onrender.com`
-  - `VITE_API_URL=https://watch-party-backend-4msr.onrender.com`
-
-After changing env vars on Render, redeploy the service.
-
-## Troubleshooting
-
-### CORS errors on Socket.IO polling
-
-If you see:
-
-- `No 'Access-Control-Allow-Origin' header is present`
-- `net::ERR_FAILED 200 (OK)`
-
-Check:
-- Backend `CORS_ORIGIN` includes your frontend origin exactly
-- Origins are comma-separated and have no trailing slash
-- Backend has been redeployed after env changes
-
-### YouTube video not loading
-
-Try another video. Some videos are restricted by YouTube embed policy.
-
-## License
-
-MIT
