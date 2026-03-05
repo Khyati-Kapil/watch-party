@@ -20,7 +20,6 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error) {
-    // Keep the app from going blank and log details for debugging.
     console.error("UI runtime error:", error);
   }
 
