@@ -13,14 +13,18 @@ dotenv.config();
 
 const app = express();
 
-const normalizeOrigin = (origin: string) => origin.trim().replace(/\/+$/, "");
+const normalizeOrigin = (origin: string) =>
+  origin
+    .trim()
+    .replace(/^['"]+|['"]+$/g, "")
+    .replace(/\/+$/, "");
 
 const allowedOrigins = (process.env.CORS_ORIGIN ?? "*")
   .split(",")
   .map((origin) => normalizeOrigin(origin))
   .filter(Boolean);
 
-const allowAllOrigins = allowedOrigins.includes("*");
+const allowAllOrigins = allowedOrigins.length === 0 || allowedOrigins.includes("*");
 
 const isAllowedOrigin = (origin?: string | null) => {
   if (allowAllOrigins) return true;
